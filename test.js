@@ -1,6 +1,6 @@
 "use strict";
 
-var newCurl = Duktape.modDlload('./curl.so', "dukopen_curl")();
+var newCurl = require('./curl.so');
 
 var curl = newCurl();
 

@@ -296,7 +296,6 @@ duk_ret_t dukopen_curl(duk_context *ctx) {
   duk_set_finalizer(ctx, -2);
   duk_put_function_list(ctx, -1, dcurl_easy_methods);
   duk_put_global_string(ctx, "CurlPrototype");
-  duk_dump_context_stderr(ctx);
   // Push init as the module itself
   duk_push_c_function(ctx, dcurl_easy_init, 0);
   return 1;
