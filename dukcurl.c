@@ -8,6 +8,14 @@
 
 static char error_buf[CURL_ERROR_SIZE];
 
+static void dcurl_verify(duk_context *ctx, CURLcode code) {
+  if (!code) { return; }
+  const char* message = error_buf;
+  if (error_buf[0] == 0) {
+    message = curl_easy_strerror(code);
+  }
+  duk_error(ctx, DUK_ERR_ERROR, message);
+}
 
 // Helper to verify item at index is curl instance and get it's pointer
 static CURL* dcurl_require_pointer(duk_context *ctx, int index) {
@@ -22,7 +30,7 @@ static CURL* dcurl_require_pointer(duk_context *ctx, int index) {
   return curl;
 }
 
-static CURL* dcurl_check(duk_context *ctx) {
+static CURL* dcurl_instance(duk_context *ctx) {
   CURL *curl;
   duk_push_this(ctx);
   curl = dcurl_require_pointer(ctx, -1);
@@ -55,40 +63,6 @@ static duk_ret_t dcurl_easy_cleanup(duk_context *ctx) {
   return 0;
 }
 
-
-#define charinfo(name, constant)      \
-  if (strcmp(str, name) == 0) {       \
-    char* str = NULL;                 \
-    if (curl_easy_getinfo(curl,       \
-        constant, str)) {             \
-      goto fail;                      \
-    }                                 \
-    duk_push_string(ctx, str);        \
-    return 1;                         \
-  }
-
-#define longinfo(name, constant)      \
-  if (strcmp(str, name) == 0) {       \
-    long num = 0;                     \
-    if (curl_easy_getinfo(curl,       \
-        constant, &num)) {            \
-      goto fail;                      \
-    }                                 \
-    duk_push_int(ctx, num);           \
-    return 1;                         \
-  }
-
-#define doubleinfo(name, constant)    \
-  if (strcmp(str, name) == 0) {       \
-    double num = 0;                   \
-    if (curl_easy_getinfo(curl,       \
-        constant, &num)) {            \
-      goto fail;                      \
-    }                                 \
-    duk_push_number(ctx, num);        \
-    return 1;                         \
-  }
-
 #define OPT(type, name, constant) \
   if (strcmp(str, name) == 0) {   \
     opt = constant;               \
@@ -96,7 +70,7 @@ static duk_ret_t dcurl_easy_cleanup(duk_context *ctx) {
   }
 
 static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
-  CURL *curl = dcurl_check(ctx);
+  CURL *curl = dcurl_instance(ctx);
 
   const char *str = duk_require_string(ctx, 0);
   CURLoption opt;
@@ -167,17 +141,23 @@ static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
   return 0;
 
   processchar: {
-    if (curl_easy_setopt(curl, opt, (char*)duk_require_string(ctx, 1))) goto fail;
+    dcurl_verify(ctx,
+      curl_easy_setopt(curl, opt, (char*)duk_require_string(ctx, 1))
+    );
     return 0;
   }
 
   processlong: {
-    if (curl_easy_setopt(curl, opt, (long)duk_require_int(ctx, 1))) goto fail;
+    dcurl_verify(ctx,
+      curl_easy_setopt(curl, opt, (long)duk_require_int(ctx, 1))
+    );
     return 0;
   }
 
   processbool: {
-    if (curl_easy_setopt(curl, opt, (long)duk_require_boolean(ctx, 1))) goto fail;
+    dcurl_verify(ctx,
+      curl_easy_setopt(curl, opt, (long)duk_require_boolean(ctx, 1))
+    );
     return 0;
   }
 
@@ -195,22 +175,21 @@ static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
       slist = curl_slist_append(slist, duk_get_string(ctx, -1));
       duk_pop(ctx);
     }
-    if (curl_easy_setopt(curl, opt, slist)) goto fail;
+    dcurl_verify(ctx,
+      curl_easy_setopt(curl, opt, slist)
+    );
     return 0;
   }
 
-  fail: {
-    duk_error(ctx, DUK_ERR_ERROR, error_buf);
-    return 0;
-  }
 }
 
 static duk_ret_t dcurl_easy_perform(duk_context *ctx) {
-  CURL *curl = dcurl_check(ctx);
+  CURL *curl = dcurl_instance(ctx);
 
-  if(curl_easy_perform(curl)) {
-    duk_error(ctx, DUK_ERR_ERROR, error_buf);
-  }
+  dcurl_verify(ctx,
+    curl_easy_perform(curl)
+  );
+
   return 0;
 }
 
@@ -221,7 +200,7 @@ static duk_ret_t dcurl_easy_perform(duk_context *ctx) {
   }
 
 static duk_ret_t dcurl_easy_getinfo(duk_context *ctx) {
-  CURL *curl = dcurl_check(ctx);
+  CURL *curl = dcurl_instance(ctx);
   const char *str = duk_require_string(ctx, 0);
   CURLINFO info;
 
@@ -238,63 +217,64 @@ static duk_ret_t dcurl_easy_getinfo(duk_context *ctx) {
   INFO(double, "redirect-time", CURLINFO_REDIRECT_TIME)
   INFO(long, "redirect-count", CURLINFO_REDIRECT_COUNT)
   INFO(char, "redirect-url", CURLINFO_REDIRECT_URL)
-  INFO(double, "size_upload", CURLINFO_SIZE_UPLOAD)
-  INFO(double, "size_download", CURLINFO_SIZE_DOWNLOAD)
-  INFO(double, "speed_download", CURLINFO_SPEED_DOWNLOAD)
-  INFO(double, "speed_upload", CURLINFO_SPEED_UPLOAD)
-  INFO(long, "header_size", CURLINFO_HEADER_SIZE)
-  INFO(long, "request_size", CURLINFO_REQUEST_SIZE)
-  INFO(long, "ssl_verifyresult", CURLINFO_SSL_VERIFYRESULT)
-  INFO(double, "content_length_download", CURLINFO_CONTENT_LENGTH_DOWNLOAD)
-  INFO(double, "content_length_upload", CURLINFO_CONTENT_LENGTH_UPLOAD)
-  INFO(char, "content_type", CURLINFO_CONTENT_TYPE)
+  INFO(double, "size-upload", CURLINFO_SIZE_UPLOAD)
+  INFO(double, "size-download", CURLINFO_SIZE_DOWNLOAD)
+  INFO(double, "speed-download", CURLINFO_SPEED_DOWNLOAD)
+  INFO(double, "speed-upload", CURLINFO_SPEED_UPLOAD)
+  INFO(long, "header-size", CURLINFO_HEADER_SIZE)
+  INFO(long, "request-size", CURLINFO_REQUEST_SIZE)
+  INFO(long, "ssl-verifyresult", CURLINFO_SSL_VERIFYRESULT)
+  INFO(double, "content-length-download", CURLINFO_CONTENT_LENGTH_DOWNLOAD)
+  INFO(double, "content-length-upload", CURLINFO_CONTENT_LENGTH_UPLOAD)
+  INFO(char, "content-type", CURLINFO_CONTENT_TYPE)
   INFO(char, "private", CURLINFO_PRIVATE)
-  INFO(long, "os_errno", CURLINFO_OS_ERRNO)
-  INFO(long, "num_connects", CURLINFO_NUM_CONNECTS)
-  INFO(char, "primary_ip", CURLINFO_PRIMARY_IP)
-  INFO(long, "primary_port", CURLINFO_PRIMARY_PORT)
-  INFO(char, "local_ip", CURLINFO_LOCAL_IP)
-  INFO(long, "local_port", CURLINFO_LOCAL_PORT)
+  INFO(long, "os-errno", CURLINFO_OS_ERRNO)
+  INFO(long, "num-connects", CURLINFO_NUM_CONNECTS)
+  INFO(char, "primary-ip", CURLINFO_PRIMARY_IP)
+  INFO(long, "primary-port", CURLINFO_PRIMARY_PORT)
+  INFO(char, "local-ip", CURLINFO_LOCAL_IP)
+  INFO(long, "local-port", CURLINFO_LOCAL_PORT)
 
   duk_error(ctx, DUK_ERR_REFERENCE_ERROR, "Unknown or unsupported curlinfo");
   return 0;
 
   processchar: {
-    char* str = NULL;
-    if (curl_easy_getinfo(curl, info, str)) goto fail;
+    const char* str = NULL;
+    dcurl_verify(ctx,
+      curl_easy_getinfo(curl, info, &str)
+    );
     duk_push_string(ctx, str);
     return 1;
   }
 
   processlong: {
     long num = 0;
-    if (curl_easy_getinfo(curl, info, &num)) goto fail;
+    dcurl_verify(ctx,
+      curl_easy_getinfo(curl, info, &num)
+    );
     duk_push_int(ctx, num);
     return 1;
   }
 
   processdouble: {
     double num = 0;
-    if (curl_easy_getinfo(curl, info, &num)) goto fail;
-    duk_push_int(ctx, num);
+    dcurl_verify(ctx,
+      curl_easy_getinfo(curl, info, &num)
+    );
+    duk_push_number(ctx, num);
     return 1;
-  }
-
-  fail: {
-    duk_error(ctx, DUK_ERR_ERROR, error_buf);
-    return 0;
   }
 }
 
 static duk_ret_t dcurl_easy_duphandle(duk_context *ctx) {
-  CURL *curl = dcurl_check(ctx);
+  CURL *curl = dcurl_instance(ctx);
   CURL *dup = curl_easy_duphandle(curl);
   dcurl_push(ctx, dup);
   return 1;
 }
 
 static duk_ret_t dcurl_easy_reset(duk_context *ctx) {
-  CURL *curl = dcurl_check(ctx);
+  CURL *curl = dcurl_instance(ctx);
   curl_easy_reset(curl);
   curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buf);
   return 0;
@@ -310,14 +290,13 @@ static const duk_function_list_entry dcurl_easy_methods[] = {
 };
 
 duk_ret_t dukopen_curl(duk_context *ctx) {
-
   // Create the handle prototype as global CurlPrototype
   duk_push_object(ctx);
   duk_push_c_function(ctx, dcurl_easy_cleanup, 0);
-  duk_set_finalizer(ctx, -1);
+  duk_set_finalizer(ctx, -2);
   duk_put_function_list(ctx, -1, dcurl_easy_methods);
   duk_put_global_string(ctx, "CurlPrototype");
-
+  duk_dump_context_stderr(ctx);
   // Push init as the module itself
   duk_push_c_function(ctx, dcurl_easy_init, 0);
   return 1;
