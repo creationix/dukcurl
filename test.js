@@ -8,8 +8,13 @@ curl.setopt("url", "http://luvit.io");
 /* luvit.io is redirected, so we tell libcurl to follow redirection */
 curl.setopt("followlocation", true);
 
+curl.setopt("useragent", "libcurl-agent/1.0");
+
 /* Perform the request, res will get the return code */
-curl.perform();
+curl.perform(function (data) {
+  print("DATA", data.length);
+  return data.length;
+});
 
 // read some info parameters
 [

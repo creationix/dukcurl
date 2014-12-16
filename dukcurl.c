@@ -136,6 +136,7 @@ static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
   OPT(char, "cookie", CURLOPT_COOKIE)
   OPT(bool, "http-content-decoding", CURLOPT_HTTP_CONTENT_DECODING)
   OPT(bool, "http-transfer-decoding", CURLOPT_HTTP_TRANSFER_DECODING)
+  OPT(bool, "httpget", CURLOPT_HTTPGET)
 
   duk_error(ctx, DUK_ERR_REFERENCE_ERROR, "Unknown or unsupported curlopt");
   return 0;
@@ -183,8 +184,39 @@ static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
 
 }
 
+static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
+  char *buffer;
+  duk_context *ctx = userdata;
+  size = size * nmemb;
+  duk_dup(ctx, 0);
+  buffer = duk_push_fixed_buffer(ctx, size);
+  memcpy(buffer, ptr, size);
+  duk_call(ctx, 1);
+  return duk_to_int(ctx, -1);
+}
+
+static size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
+  char *buffer;
+  duk_context *ctx = userdata;
+  size = size * nmemb;
+  duk_dup(ctx, 1);
+  buffer = duk_push_fixed_buffer(ctx, size);
+  memcpy(buffer, ptr, size);
+  duk_call(ctx, 1);
+  return duk_to_int(ctx, -1);
+}
+
 static duk_ret_t dcurl_easy_perform(duk_context *ctx) {
   CURL *curl = dcurl_instance(ctx);
+
+  if (duk_is_function(ctx, 0)) {
+    dcurl_verify(ctx, curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback));
+    dcurl_verify(ctx, curl_easy_setopt(curl, CURLOPT_WRITEDATA, ctx));
+  }
+  if (duk_is_function(ctx, 1)) {
+    dcurl_verify(ctx, curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback));
+    dcurl_verify(ctx, curl_easy_setopt(curl, CURLOPT_HEADERDATA, ctx));
+  }
 
   dcurl_verify(ctx,
     curl_easy_perform(curl)
@@ -282,7 +314,7 @@ static duk_ret_t dcurl_easy_reset(duk_context *ctx) {
 
 static const duk_function_list_entry dcurl_easy_methods[] = {
   {"setopt", dcurl_easy_setopt, 2},
-  {"perform", dcurl_easy_perform, 0},
+  {"perform", dcurl_easy_perform, 2},
   {"getinfo", dcurl_easy_getinfo, 1},
   {"duphandle", dcurl_easy_duphandle, 0},
   {"reset", dcurl_easy_reset, 0},
