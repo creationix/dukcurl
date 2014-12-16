@@ -6,6 +6,14 @@
 
 #define DIPROP_CURL "\xff\xff" "curl"
 
+typedef struct {
+  CURL *curl;
+  duk_context *ctx;
+  int write_cb;
+  int header_cb;
+  int read_cb;
+} dcurl_t;
+
 static char error_buf[CURL_ERROR_SIZE];
 
 static void dcurl_verify(duk_context *ctx, CURLcode code) {
@@ -18,16 +26,16 @@ static void dcurl_verify(duk_context *ctx, CURLcode code) {
 }
 
 // Helper to verify item at index is curl instance and get it's pointer
-static CURL* dcurl_require_pointer(duk_context *ctx, int index) {
-  CURL *curl;
+static dcurl_t* dcurl_require_pointer(duk_context *ctx, int index) {
+  dcurl_t *container;
   duk_get_prop_string(ctx, index, DIPROP_CURL);
-  curl = duk_get_pointer(ctx, -1);
+  container = duk_get_pointer(ctx, -1);
   duk_pop(ctx);
-  if (!curl) {
+  if (!container) {
     duk_error(ctx, DUK_ERR_TYPE_ERROR, "Expected Curl at index %d", index);
     return NULL;
   }
-  return curl;
+  return container;
 }
 
 static CURL* dcurl_instance(duk_context *ctx) {
@@ -38,29 +46,90 @@ static CURL* dcurl_instance(duk_context *ctx) {
   return curl;
 }
 
-static void dcurl_push(duk_context *ctx, CURL* curl) {
+static void dcurl_push(duk_context *ctx, dcurl_t *container) {
   // Create a new instance of CurlPrototype
   duk_push_object(ctx);
   duk_get_global_string(ctx, "CurlPrototype");
   duk_set_prototype(ctx, -2);
 
   // Store the pointer inside it
-  duk_push_pointer(ctx, curl);
+  duk_push_pointer(ctx, container);
   duk_put_prop_string(ctx, -2, DIPROP_CURL);
 }
 
 // Create a new curl instance
 static duk_ret_t dcurl_easy_init(duk_context *ctx) {
   CURL *curl = curl_easy_init();
+  dcurl_t *container = malloc(sizeof(*container));
+  container->curl = curl;
+  container->ctx = ctx;
+  container->write_cb = 0;
+  container->header_cb = 0;
+  container->read_cb = 0;
   curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buf);
-  dcurl_push(ctx, curl);
+  dcurl_push(ctx, container);
   return 1;
 }
 
 // Finalizer that's called when a curl instance is garbage collected.
 static duk_ret_t dcurl_easy_cleanup(duk_context *ctx) {
-  curl_easy_cleanup(dcurl_require_pointer(ctx, 0));
+  dcurl_t *container = dcurl_require_pointer(ctx, 0);
+  duv_unref(ctx, container->write_cb);
+  container->write_cb = 0;
+  duv_unref(ctx, container->header_cb);
+  container->header_cb = 0;
+  duv_unref(ctx, container->read_cb);
+  container->read_cb = 0;
+  curl_easy_cleanup(container->curl);
+  free(container);
   return 0;
+}
+
+static size_t write_callback(const char *ptr, size_t size, size_t num, void *userdata) {
+  char *buffer;
+  dcurl_t *container = userdata;
+  duk_context *ctx = container->ctx;
+  size = size * num;
+  duv_push_ref(ctx, container->write_cb);
+  buffer = duk_push_fixed_buffer(ctx, size);
+  memcpy(buffer, ptr, size);
+  duk_call(ctx, 1);
+  return duk_to_int(ctx, -1);
+}
+
+static size_t header_callback(const char *ptr, size_t size, size_t num, void *userdata) {
+  char *buffer;
+  dcurl_t *container = userdata;
+  duk_context *ctx = container->ctx;
+  size = size * num;
+  duv_push_ref(ctx, container->header_cb);
+  buffer = duk_push_fixed_buffer(ctx, size);
+  memcpy(buffer, ptr, size);
+  duk_call(ctx, 1);
+  return duk_to_int(ctx, -1);
+}
+
+static size_t read_callback(char *buffer, size_t size, size_t num, void *userdata) {
+  dcurl_t *container = userdata;
+  duk_context *ctx = container->ctx;
+  size = size * num;
+  size_t outsize;
+  const char *output;
+  duv_push_ref(ctx, container->read_cb);
+  duk_push_int(ctx, size);
+  duk_call(ctx, 1);
+  if (duk_is_string(ctx, -1)) {
+    output = duk_require_lstring(ctx, -1, &outsize);
+  }
+  else {
+    output = duk_require_buffer(ctx, -1, &outsize);
+  }
+  if (outsize > size) {
+    duk_error(ctx, DUK_ERR_TYPE_ERROR, "Read data too big for curl to handle");
+    return 0;
+  }
+  memcpy(buffer, output, outsize);
+  return outsize;
 }
 
 #define OPT(type, name, constant) \
@@ -69,11 +138,29 @@ static duk_ret_t dcurl_easy_cleanup(duk_context *ctx) {
     goto process##type;           \
   }
 
+#define CALLBACK(type, name, constant1, constant2)                             \
+  if (strcmp(str, name) == 0) {                                                \
+    if (!duk_is_function(ctx, 1)) {                                            \
+      duk_error(ctx, DUK_ERR_TYPE_ERROR, "Function required for callback");    \
+    }                                                                          \
+    dcurl_verify(ctx, curl_easy_setopt(curl, constant1, type##_callback));     \
+    dcurl_verify(ctx, curl_easy_setopt(curl, constant2, container));           \
+    duk_dup(ctx, 1);                                                           \
+    container->type##_cb = duv_ref(ctx);                                       \
+    return 0;                                                                  \
+  }
+
 static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
-  CURL *curl = dcurl_instance(ctx);
+  dcurl_t *container = dcurl_instance(ctx);
+  CURL *curl = container->curl;
 
   const char *str = duk_require_string(ctx, 0);
   CURLoption opt;
+
+  // Callback options
+  CALLBACK(write, "writefunction", CURLOPT_WRITEFUNCTION, CURLOPT_WRITEDATA)
+  CALLBACK(header, "headerfunction", CURLOPT_HEADERFUNCTION, CURLOPT_HEADERDATA)
+  CALLBACK(read, "readfunction", CURLOPT_READFUNCTION, CURLOPT_READDATA)
 
   // BEHAVIOR OPTIONS
   OPT(bool, "verbose", CURLOPT_VERBOSE)
@@ -126,7 +213,7 @@ static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
   OPT(bool, "followlocation", CURLOPT_FOLLOWLOCATION)
   OPT(bool, "unrestricted-auth", CURLOPT_UNRESTRICTED_AUTH)
   OPT(long, "maxredirs", CURLOPT_MAXREDIRS)
-  OPT(long, "post", CURLOPT_POST)
+  OPT(bool, "post", CURLOPT_POST)
   OPT(char, "postfields", CURLOPT_POSTFIELDS)
   OPT(long, "postfieldsize", CURLOPT_POSTFIELDSIZE)
   OPT(char, "referer", CURLOPT_REFERER)
@@ -137,6 +224,7 @@ static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
   OPT(bool, "http-content-decoding", CURLOPT_HTTP_CONTENT_DECODING)
   OPT(bool, "http-transfer-decoding", CURLOPT_HTTP_TRANSFER_DECODING)
   OPT(bool, "httpget", CURLOPT_HTTPGET)
+  OPT(bool, "put", CURLOPT_PUT)
 
   duk_error(ctx, DUK_ERR_REFERENCE_ERROR, "Unknown or unsupported curlopt");
   return 0;
@@ -184,43 +272,11 @@ static duk_ret_t dcurl_easy_setopt(duk_context *ctx) {
 
 }
 
-static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
-  char *buffer;
-  duk_context *ctx = userdata;
-  size = size * nmemb;
-  duk_dup(ctx, 0);
-  buffer = duk_push_fixed_buffer(ctx, size);
-  memcpy(buffer, ptr, size);
-  duk_call(ctx, 1);
-  return duk_to_int(ctx, -1);
-}
-
-static size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
-  char *buffer;
-  duk_context *ctx = userdata;
-  size = size * nmemb;
-  duk_dup(ctx, 1);
-  buffer = duk_push_fixed_buffer(ctx, size);
-  memcpy(buffer, ptr, size);
-  duk_call(ctx, 1);
-  return duk_to_int(ctx, -1);
-}
-
 static duk_ret_t dcurl_easy_perform(duk_context *ctx) {
-  CURL *curl = dcurl_instance(ctx);
+  dcurl_t *container = dcurl_instance(ctx);
+  CURL *curl = container->curl;
 
-  if (duk_is_function(ctx, 0)) {
-    dcurl_verify(ctx, curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback));
-    dcurl_verify(ctx, curl_easy_setopt(curl, CURLOPT_WRITEDATA, ctx));
-  }
-  if (duk_is_function(ctx, 1)) {
-    dcurl_verify(ctx, curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback));
-    dcurl_verify(ctx, curl_easy_setopt(curl, CURLOPT_HEADERDATA, ctx));
-  }
-
-  dcurl_verify(ctx,
-    curl_easy_perform(curl)
-  );
+  dcurl_verify(ctx, curl_easy_perform(curl));
 
   return 0;
 }
@@ -232,7 +288,8 @@ static duk_ret_t dcurl_easy_perform(duk_context *ctx) {
   }
 
 static duk_ret_t dcurl_easy_getinfo(duk_context *ctx) {
-  CURL *curl = dcurl_instance(ctx);
+  dcurl_t *container = dcurl_instance(ctx);
+  CURL *curl = container->curl;
   const char *str = duk_require_string(ctx, 0);
   CURLINFO info;
 
@@ -299,14 +356,16 @@ static duk_ret_t dcurl_easy_getinfo(duk_context *ctx) {
 }
 
 static duk_ret_t dcurl_easy_duphandle(duk_context *ctx) {
-  CURL *curl = dcurl_instance(ctx);
+  dcurl_t *container = dcurl_instance(ctx);
+  CURL *curl = container->curl;
   CURL *dup = curl_easy_duphandle(curl);
   dcurl_push(ctx, dup);
   return 1;
 }
 
 static duk_ret_t dcurl_easy_reset(duk_context *ctx) {
-  CURL *curl = dcurl_instance(ctx);
+  dcurl_t *container = dcurl_instance(ctx);
+  CURL *curl = container->curl;
   curl_easy_reset(curl);
   curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buf);
   return 0;
@@ -314,7 +373,7 @@ static duk_ret_t dcurl_easy_reset(duk_context *ctx) {
 
 static const duk_function_list_entry dcurl_easy_methods[] = {
   {"setopt", dcurl_easy_setopt, 2},
-  {"perform", dcurl_easy_perform, 2},
+  {"perform", dcurl_easy_perform, 0},
   {"getinfo", dcurl_easy_getinfo, 1},
   {"duphandle", dcurl_easy_duphandle, 0},
   {"reset", dcurl_easy_reset, 0},
@@ -322,6 +381,9 @@ static const duk_function_list_entry dcurl_easy_methods[] = {
 };
 
 duk_ret_t dukopen_curl(duk_context *ctx) {
+  // Setup the ref system
+  duv_ref_setup(ctx);
+
   // Create the handle prototype as global CurlPrototype
   duk_push_object(ctx);
   duk_push_c_function(ctx, dcurl_easy_cleanup, 0);

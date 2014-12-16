@@ -5,16 +5,20 @@ var newCurl = require('./curl.so');
 var curl = newCurl();
 
 curl.setopt("url", "http://luvit.io");
-/* luvit.io is redirected, so we tell libcurl to follow redirection */
+// luvit.io is redirected, so we tell libcurl to follow redirection
 curl.setopt("followlocation", true);
 
+// Set a useragent to make some servers happy
 curl.setopt("useragent", "libcurl-agent/1.0");
 
-/* Perform the request, res will get the return code */
-curl.perform(function (data) {
+// Intercept the write stream to handle in JavaScript
+curl.setopt("writefunction", function (data) {
   print("DATA", data.length);
   return data.length;
 });
+
+// Perform the request.
+curl.perform();
 
 // read some info parameters
 [
