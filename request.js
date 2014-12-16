@@ -47,9 +47,10 @@ function get(url, headers) {
   };
 }
 
-// Replace with your own github token
+// Create token at https://github.com/settings/applications#personal-access-tokens
+// To increate rate limit to 5000
 var headers = [
-  "Authorization: token 25d25503a512e22994507cbcc16d92d52e563622"
+  // "Authorization: token 25d25503a512e22994507cbcc16d92d52e563622"
 ];
 var res = get("https://api.github.com/repos/creationix/dukcurl/git/refs/heads/master", headers);
 p(res);
